@@ -86,8 +86,11 @@ def load_data(filename, entity2id, relation2id, is_unweigted=False, directed=Tru
 
 
 def build_data(path='./data/WN18RR/', is_unweigted=False, directed=True):
-    entity2id = read_entity_from_id(path + 'entity2id.txt')
-    relation2id = read_relation_from_id(path + 'relation2id.txt')
+    #修改，使用os.path.join提高平台兼容性
+    entity2id = read_entity_from_id(os.path.join(path, 'entity2id.txt'))
+    relation2id = read_relation_from_id(os.path.join(path , 'relation2id.txt'))
+    #print(f"Looking for file at: {path + 'entity2id.txt'}")
+
 
     # Adjacency matrix only required for training phase
     # Currenlty creating as unweighted, undirected
