@@ -11,10 +11,12 @@ Blog [link](https://deepakn97.github.io/blog/2019/Knowledge-Base-Relation-Predic
 Please download miniconda from above link and create an environment using the following command:
 
         conda env create -f pytorch35.yml
+        conda env create -f pytorch.yml -p openbayes
 
 Activate the environment before executing the program as follows:
 
         source activate pytorch35
+        conda activate /output/KBGAT/openbayes
 ### Dataset
 We used five different datasets for evaluating our model. All the datasets and their folder names are given below.
 - Freebase: FB15k-237
@@ -75,6 +77,11 @@ To reproduce the results published in the paper:
 When running for first time, run preparation script with:
 
         $ sh prepare.sh
+        #解决torch报错
+        $pip uninstall torch torchvision torchaudio
+        $pip cache purge  # 清理pip缓存（可选）
+        $pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu118
+
 
 * **Wordnet**
 
