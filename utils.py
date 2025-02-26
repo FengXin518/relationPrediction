@@ -18,17 +18,60 @@ import os
 import logging
 import time
 import pickle
+import glob 
 
 
 CUDA = torch.cuda.is_available()
 
 
-def save_model(model, name, epoch, folder_name):
+def save_model_last(model, name, epoch, folder_name):
     print("Saving Model")
     torch.save(model.state_dict(),
                (folder_name + "trained_{}.pth").format(epoch))
     print("Done saving Model")
 
+def save_model(model, epoch_info, folder_name):
+    """
+    保存模型，文件名包含 epoch、average loss 和 epoch_time
+    参数:
+        model: 要保存的模型
+        name: 数据集名称（用于日志）
+        epoch_info: 字典，包含 epoch_num, average_loss, epoch_time
+        folder_name: 保存目录
+    """
+    # 确保目录存在
+    os.makedirs(folder_name, exist_ok=True)
+    
+    # 从 epoch_info 中提取信息
+    epoch = epoch_info.get("epoch_num", 0)
+    avg_loss = epoch_info.get("average_loss", 0)
+    time_spent = epoch_info.get("epoch_time", 0)
+
+    # 生成文件名（示例：epoch5_loss0.1234_time120s.pth）
+    filename = f"epoch{epoch}_loss{avg_loss:.4f}_time{time_spent:.0f}s.pth"
+    save_path = os.path.join(folder_name, filename)
+
+    # 保存模型
+    print(f"Saving Model: {filename}")
+    torch.save(model.state_dict(), save_path)
+    #print(f"Done saving Model to {save_path}")
+
+# 加载模型
+def load_model(model, save_dir, target_epoch):
+    # 构造匹配模式（注意没有前导零填充和下划线）
+    pattern = f"epoch{target_epoch}_*.pth"
+    model_path = os.path.join(save_dir, pattern)
+    print(f"[Debug] 模型查找路径: {model_path}") 
+    
+    # 使用 glob 查找文件
+    matched_files = glob.glob(model_path)
+    if not matched_files:
+        raise FileNotFoundError(f"找不到 epoch={target_epoch} 的模型文件")
+    
+    # 加载第一个匹配的模型（建议添加排序确保选择最新）
+    model.load_state_dict(torch.load(matched_files[0]))
+    print(f"已加载模型: {matched_files[0]}")
+    return model
 
 gat_loss_func = nn.MarginRankingLoss(margin=0.5)
 

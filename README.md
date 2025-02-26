@@ -86,10 +86,16 @@ When running for first time, run preparation script with:
 * **Wordnet**
 
         $ python3 main.py --get_2hop True
+        $ python main.py --get_2hop True
+        * **输出重定向** *
+        $ python -u main.py --get_2hop True 2>&1 | tee output.log
 
 * **Freebase**
 
-        $ python3 main.py --data ./data/FB15k-237/ --epochs_gat 3000 --epochs_conv 200 --weight_decay_gat 0.00001 --get_2hop True --partial_2hop True --batch_size_gat 272115 --margin 1 --out_channels 50 --drop_conv 0.3 --weight_decay_conv 0.000001 --output_folder ./checkpoints/fb/out/
+        $ python3 main.py --data ./data/FB15k-237/ --epochs_gat 3000 --epochs_conv 200 --weight_decay_gat 0.00001 --get_2hop True --partial_2hop True --batch_size_gat 272115 --margin 1 --out_channels 50 --drop_conv 0.3 --weight_decay_conv 0.000001 --output_folder ./checkpoints/fb/ True 2>&1 | tee output.log
+
+        #WN18RR已获取2hop
+        $ python main.py --data ./data/WN18RR/ --epochs_gat 3600 --epochs_conv 200 --weight_decay_gat 0.00001 --get_2hop false --ue_2hop true --partial_2hop false --batch_size_gat 86835 --margin 5 --out_channels 500 --drop_conv 0.0 --weight_decay_conv 0.000001 --output_folder ./checkpoints/wn/
 
 ### Citation
 Please cite the following paper if you use this code in your work.

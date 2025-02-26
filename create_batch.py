@@ -4,6 +4,8 @@ from collections import defaultdict
 import time
 import queue
 import random
+from pathlib import Path
+from CustomFunc import Current_time
 
 
 class Corpus:
@@ -11,7 +13,7 @@ class Corpus:
                  relation2id, headTailSelector, batch_size, valid_to_invalid_samples_ratio, unique_entities_train, get_2hop=False):
         self.train_triples = train_data[0]
 
-        # Converting to sparse tensor
+        # Converting to sparse tensor构建图的稀疏表示
         adj_indices = torch.LongTensor(
             [train_data[1][0], train_data[1][1]])  # rows and columns
         adj_values = torch.LongTensor(train_data[1][2])
@@ -301,6 +303,7 @@ class Corpus:
         neighbors = {}
         start_time = time.time()
         print("length of graph keys is ", len(self.graph.keys()))
+        print("The start time of get neighbor:", Current_time())
         for source in self.graph.keys():
             # st_time = time.time()
             temp_neighbors = self.bfs(self.graph, source, nbd_size)
@@ -343,7 +346,7 @@ class Corpus:
         source_embeds = entity_embeddings[batch_inputs[:, 0]]
         relation_embeds = relation_embeddings[batch_inputs[:, 1]]
         tail_embeds = entity_embeddings[batch_inputs[:, 2]]
-        x = source_embeds + relation_embed - tail_embeds
+        x = source_embeds + relation_embeds - tail_embeds
         x = torch.norm(x, p=1, dim=1)
         return x
 
@@ -573,7 +576,7 @@ class Corpus:
             average_mean_rank_tail.append(sum(ranks_tail) / len(ranks_tail))
             average_mean_recip_rank_tail.append(
                 sum(reciprocal_ranks_tail) / len(reciprocal_ranks_tail))
-
+        
         print("\nAveraged stats for replacing head are -> ")
         print("Hits@100 are {}".format(
             sum(average_hits_at_100_head) / len(average_hits_at_100_head)))
@@ -622,3 +625,98 @@ class Corpus:
         print("Hits@1 are {}".format(cumulative_hits_one))
         print("Mean rank {}".format(cumulative_mean_rank))
         print("Mean Reciprocal Rank {}".format(cumulative_mean_recip_rank))
+        #提取数据集名称
+        data_path = Path(args.data).resolve()  # 转换为绝对路径并解析符号链接
+        dataset_name = data_path.name  # 直接获取目录名
+
+        #构建输出目录路径：./checkpoints/output/WN18RR
+        output_dir = Path("./checkpoints") / "output" / dataset_name
+
+        #创建输出目录（如果不存在）
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)  # 自动创建父目录
+        except Exception as e:
+            print(f"Failed to create directory: {output_dir}\nerror: {e}")
+            exit(1)
+
+        ##统计原数据目录中的文件数量
+        file_count = 0
+        try:
+            if not output_dir.is_dir():
+                raise NotADirectoryError(f"The path is not a directory: {data_path}")
+            
+            # 统计文件（排除子目录和隐藏文件）
+            file_count = sum(1 for entry in output_dir.iterdir() if entry.is_file() and not entry.name.startswith("."))
+        except Exception as e:
+            print(f"File statistics failed: {e}")
+            file_count = -1  # 标记错误
+        
+        # 生成目标文件路径
+        filename = f"{dataset_name}-{file_count}.txt" if file_count >=0 else f"{dataset_name}-ERROR.txt"
+        output_path = output_dir / filename
+
+        #将结果输出到txt文件里
+        try:
+            with open(output_path, "w") as f:
+                # 写入替换头部的平均统计到文件里
+                f.write("Averaged stats for replacing head are -> \n")
+                f.write("Hits@100: {:.4f}\n".format(
+                    sum(average_hits_at_100_head) / len(average_hits_at_100_head) if average_hits_at_100_head else 0
+                ))
+                f.write("Hits@10: {:.4f}\n".format(
+                    sum(average_hits_at_ten_head) / len(average_hits_at_ten_head) if average_hits_at_ten_head else 0
+                ))
+                f.write("Hits@3: {:.4f}\n".format(
+                    sum(average_hits_at_three_head) / len(average_hits_at_three_head) if average_hits_at_three_head else 0
+                ))
+                f.write("Hits@1: {:.4f}\n".format(
+                    sum(average_hits_at_one_head) / len(average_hits_at_one_head) if average_hits_at_one_head else 0
+                ))
+                f.write("Mean Rank: {:.4f}\n".format(
+                    sum(average_mean_rank_head) / len(average_mean_rank_head) if average_mean_rank_head else 0
+                ))
+                f.write("Mean Reciprocal Rank: {:.4f}\n".format(
+                    sum(average_mean_recip_rank_head) / len(average_mean_recip_rank_head) if average_mean_recip_rank_head else 0
+                ))
+
+                #写入替换尾部的平均统计到文件里
+                f.write("=== Averaged stats for replacing tail ===\n")
+                f.write("Hits@100: {:.4f}\n".format(
+                    sum(average_hits_at_100_tail) / len(average_hits_at_100_tail) if average_hits_at_100_tail else 0
+                ))
+                f.write("Hits@10: {:.4f}\n".format(
+                    sum(average_hits_at_ten_tail) / len(average_hits_at_ten_tail) if average_hits_at_ten_tail else 0
+                ))
+                f.write("Hits@3: {:.4f}\n".format(
+                    sum(average_hits_at_three_tail) / len(average_hits_at_three_tail) if average_hits_at_three_tail else 0
+                ))
+                f.write("Hits@1: {:.4f}\n".format(
+                    sum(average_hits_at_one_tail) / len(average_hits_at_one_tail) if average_hits_at_one_tail else 0
+                ))
+                f.write("Mean Rank: {:.4f}\n".format(
+                    sum(average_mean_rank_tail) / len(average_mean_rank_tail) if average_mean_rank_tail else 0
+                ))
+                f.write("Mean Reciprocal Rank: {:.4f}\n\n".format(
+                    sum(average_mean_recip_rank_tail) / len(average_mean_recip_rank_tail) if average_mean_recip_rank_tail else 0
+                ))
+                #写入累积统计到文件里
+                f.write("=== Cumulative stats ===\n")
+                f.write("Hits@100: {:.4f}\n".format(cumulative_hits_100))
+                f.write("Hits@10: {:.4f}\n".format(cumulative_hits_ten))
+                f.write("Hits@3: {:.4f}\n".format(cumulative_hits_three))
+                f.write("Hits@1: {:.4f}\n".format(cumulative_hits_one))
+                f.write("Mean Rank: {:.4f}\n".format(cumulative_mean_rank))
+                f.write("Mean Reciprocal Rank: {:.4f}\n".format(cumulative_mean_recip_rank))
+
+        except ZeroDivisionError:
+            error_msg = "错误：计算平均值时列表为空（除数不能为零）"
+            print(error_msg)
+            # 可选：将错误信息也写入文件
+            with open(output_path, "w") as f:
+                f.write(error_msg)
+        except FileNotFoundError:
+            print(f"路径不存在: {output_path}")
+        except PermissionError:
+            print(f"无写入权限: {output_path}")
+        except Exception as e:
+            print(f"未知错误: {e}")

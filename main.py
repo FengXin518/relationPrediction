@@ -12,6 +12,9 @@ from copy import deepcopy
 from preprocess import read_entity_from_id, read_relation_from_id, init_embeddings, build_data
 from create_batch import Corpus
 from utils import save_model
+from utils import save_model_last
+from utils import load_model
+from pathlib import Path
 
 import random
 import argparse
@@ -27,13 +30,13 @@ import pickle
 
 def parse_args():
     args = argparse.ArgumentParser()
-    # network arguments
+    # network arguments 只能通过长参数获取值
     args.add_argument("-data", "--data",
                       default="./data/WN18RR", help="data directory")
     args.add_argument("-e_g", "--epochs_gat", type=int,
                       default=3600, help="Number of epochs")
     args.add_argument("-e_c", "--epochs_conv", type=int,
-                      default=200, help="Number of epochs")
+                      default=1000, help="Number of epochs")
     args.add_argument("-w_gat", "--weight_decay_gat", type=float,
                       default=5e-6, help="L2 reglarization for gat")
     args.add_argument("-w_conv", "--weight_decay_conv", type=float,
@@ -47,7 +50,7 @@ def parse_args():
     args.add_argument("-u2hop", "--use_2hop", type=bool, default=True)
     args.add_argument("-p2hop", "--partial_2hop", type=bool, default=False)
     args.add_argument("-outfolder", "--output_folder",
-                      default="./checkpoints/wn/out/", help="Folder name to save the models.")
+                      default="./checkpoints/wn/", help="Folder name to save the models.")
 
     # arguments for GAT
     args.add_argument("-b_gat", "--batch_size_gat", type=int,
@@ -76,14 +79,35 @@ def parse_args():
                       help="Number of output channels in conv layer")
     args.add_argument("-drop_conv", "--drop_conv", type=float,
                       default=0.0, help="Dropout probability for convolution layer")
+    args.add_argument("-ortho_lambda", "--ortho_lambda", type=float,
+                      default=0.01, help="Orthogonal regularization coefficient")
+    args.add_argument("-patience", "--patience", type=int,default=5, 
+                      help="Orthogonal regularization coefficient")
+    args.add_argument("-num_heads", "--num_heads", type=int,default=4, 
+                      help="最大投影头数量")
+
 
     args = args.parse_args()
+
+    #删除之前运行的模型
+    subfolders = ["conv/", "Gat/"]
+    for subfolder_name in subfolders:
+        target_dir = Path(args.output_folder + subfolder_name)
+        if not target_dir.exists():
+            continue  # 跳过不存在的子文件夹
+        
+        # 遍历子文件夹内的所有文件并删除
+        files_to_delete = [file for file in target_dir.iterdir() if file.is_file()]
+        
+        if files_to_delete:
+            for file in files_to_delete:
+                file.unlink()  # 删除文件
     return args
 
-
+best_loss_conv_model_epoch: int = 0  # 保存最优模型epoch,赋予默认值 0
+best_loss_gat_model_epoch: int = 0  # 保存最优模型epoch,赋予默认值 0
 args = parse_args()
 # %%
-
 
 def load_data(args):
     train_data, validation_data, test_data, entity2id, relation2id, headTailSelector, unique_entities_train = build_data(
@@ -166,22 +190,40 @@ def train_gat(args):
 
     # Creating the gat model here.
     ####################################
+    global best_loss_gat_model_epoch 
 
-    print("Defining model")
-
-    print(
-        "\nModel type -> GAT layer with {} heads used , Initital Embeddings training".format(args.nheads_GAT[0]))
-    model_gat = SpKBGATModified(entity_embeddings, relation_embeddings, args.entity_out_dim, args.entity_out_dim,
-                                args.drop_GAT, args.alpha, args.nheads_GAT)
+    # ------------------------ 模型初始化修改 ------------------------
+    print("\nModel type -> GAT with orthogonal projections")
+    model_gat = SpKBGATModified(
+        entity_embeddings, 
+        relation_embeddings,
+        args.entity_out_dim,
+        args.entity_out_dim,
+        args.drop_GAT,
+        args.alpha,
+        args.nheads_GAT,
+        args.num_heads,
+        args.ortho_lambda
+    )
 
     if CUDA:
         model_gat.cuda()
 
-    optimizer = torch.optim.Adam(
-        model_gat.parameters(), lr=args.lr, weight_decay=args.weight_decay_gat)
+    # ------------------------ 优化器配置 ------------------------
+    optimizer = torch.optim.Adam(model_gat.parameters(), lr=args.lr, weight_decay=args.weight_decay_gat)
 
-    scheduler = torch.optim.lr_scheduler.StepLR(
-        optimizer, step_size=500, gamma=0.5, last_epoch=-1)
+    # ------------------------ 学习率调度器升级 ------------------------
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, 
+        mode='min', 
+        factor=0.5,
+        patience=3,
+        verbose=True 
+    )
+
+    # ------------------------ 早停机制初始化 ------------------------
+    best_val_loss = float('inf')
+    early_stop_counter = 0
 
     gat_loss_func = nn.MarginRankingLoss(margin=args.margin)
 
@@ -231,41 +273,73 @@ def train_gat(args):
                 train_values = Variable(torch.FloatTensor(train_values))
 
             # forward pass
-            entity_embed, relation_embed = model_gat(
+            entity_embed, relation_embed,ortho_loss = model_gat(
                 Corpus_, Corpus_.train_adj_matrix, train_indices, current_batch_2hop_indices)
 
             optimizer.zero_grad()
 
-            loss = batch_gat_loss(
-                gat_loss_func, train_indices, entity_embed, relation_embed)
+            main_loss = batch_gat_loss(gat_loss_func, train_indices, entity_embed, relation_embed)
+            total_loss = main_loss + ortho_loss  # 关键修改点
 
-            loss.backward()
+            total_loss.backward()  # 反向传播总损失
             optimizer.step()
 
-            epoch_loss.append(loss.data.item())
+            epoch_loss.append(total_loss.item())  # 记录总损失
 
-            end_time_iter = time.time()
+            #end_time_iter = time.time()
 
-            print("Iteration-> {0}  , Iteration_time-> {1:.4f} , Iteration_loss {2:.4f}".format(
-                iters, end_time_iter - start_time_iter, loss.data.item()))
+            # print("Iteration-> {0}  , Iteration_time-> {1:.4f} , Iteration_loss {2:.4f}".format(
+            #     iters, end_time_iter - start_time_iter, total_loss.data.item()))
 
-        scheduler.step()
+        # 学习率调整
+        avg_epoch_loss = sum(epoch_loss) / len(epoch_loss)
+        scheduler.step(avg_epoch_loss)  # 根据平均损失调整学习率
+
         print("Epoch {} , average loss {} , epoch_time {}".format(
             epoch, sum(epoch_loss) / len(epoch_loss), time.time() - start_time))
         epoch_losses.append(sum(epoch_loss) / len(epoch_loss))
 
-        save_model(model_gat, args.data, epoch,
-                   args.output_folder)
+        #修改
+        # 计算指标
+        average_loss = sum(epoch_loss) / len(epoch_loss) if epoch_loss else 0
+        epoch_time = time.time() - start_time
+
+        # 构建 epoch_info 字典
+        epoch_info = {
+            "epoch_num": epoch,
+            "average_loss": average_loss,
+            "epoch_time": epoch_time
+        }
+        save_model(model_gat, epoch_info, args.output_folder + "Gat/")
+        # if epoch % 50 == 0:
+        #     save_model(model_gat, epoch_info, args.output_folder + "Gat/")
+        # elif epoch == args.epochs_gat - 1:
+        #     save_model_last(model_gat, args.data, epoch, args.output_folder + "Gat/")
+        
+        #早停机制
+        if avg_epoch_loss < best_val_loss:
+            best_val_loss = avg_epoch_loss
+            best_loss_gat_model_epoch = epoch
+            early_stop_counter = 0
+        else:
+            early_stop_counter += 1
+            if early_stop_counter >= 300:
+                print("Early stopping triggered")
+                break
 
 
 def train_conv(args):
 
     # Creating convolution model here.
     ####################################
+    global best_loss_conv_model_epoch
 
+    # ------------------------ 模型初始化修改 ------------------------
     print("Defining model")
     model_gat = SpKBGATModified(entity_embeddings, relation_embeddings, args.entity_out_dim, args.entity_out_dim,
-                                args.drop_GAT, args.alpha, args.nheads_GAT)
+                                args.drop_GAT, args.alpha, args.nheads_GAT,args.num_heads,args.ortho_lambda)
+
+
     print("Only Conv model trained")
     model_conv = SpKBGATConvOnly(entity_embeddings, relation_embeddings, args.entity_out_dim, args.entity_out_dim,
                                  args.drop_GAT, args.drop_conv, args.alpha, args.alpha_conv,
@@ -275,8 +349,9 @@ def train_conv(args):
         model_conv.cuda()
         model_gat.cuda()
 
-    model_gat.load_state_dict(torch.load(
-        '{}/trained_{}.pth'.format(args.output_folder, args.epochs_gat - 1)), strict=False)
+    load_model(model_gat, args.output_folder + "Gat/", best_loss_gat_model_epoch)
+    # model_gat.load_state_dict(torch.load(
+    #     '{}/trained_{}.pth'.format(args.output_folder + "Gat/", args.epochs_gat - 1)), strict=False)
     model_conv.final_entity_embeddings = model_gat.final_entity_embeddings
     model_conv.final_relation_embeddings = model_gat.final_relation_embeddings
 
@@ -293,6 +368,10 @@ def train_conv(args):
 
     epoch_losses = []   # losses of all epochs
     print("Number of epochs {}".format(args.epochs_conv))
+
+    # ------------------------ 早停机制初始化 ------------------------
+    best_val_loss = float('inf')
+    early_stop_counter = 0
 
     for epoch in range(args.epochs_conv):
         print("\nepoch-> ", epoch)
@@ -336,31 +415,54 @@ def train_conv(args):
 
             epoch_loss.append(loss.data.item())
 
-            end_time_iter = time.time()
+            # end_time_iter = time.time()
 
-            print("Iteration-> {0}  , Iteration_time-> {1:.4f} , Iteration_loss {2:.4f}".format(
-                iters, end_time_iter - start_time_iter, loss.data.item()))
+            # print("Iteration-> {0}  , Iteration_time-> {1:.4f} , Iteration_loss {2:.4f}".format(
+            #     iters, end_time_iter - start_time_iter, loss.data.item()))
 
         scheduler.step()
         print("Epoch {} , average loss {} , epoch_time {}".format(
             epoch, sum(epoch_loss) / len(epoch_loss), time.time() - start_time))
         epoch_losses.append(sum(epoch_loss) / len(epoch_loss))
 
-        save_model(model_conv, args.data, epoch,
-                   args.output_folder + "conv/")
+        #修改
+        # 计算指标
+        average_loss = sum(epoch_loss) / len(epoch_loss) if epoch_loss else 0
+        epoch_time = time.time() - start_time
+
+        # 构建 epoch_info 字典
+        epoch_info = {
+            "epoch_num": epoch,
+            "average_loss": average_loss,
+            "epoch_time": epoch_time
+        }
+        
+        #保存模型
+        save_model(model_conv, epoch_info, args.output_folder + "conv/")
+        #早停机制
+        if average_loss < best_val_loss:
+            best_val_loss = average_loss
+            best_loss_conv_model_epoch = epoch
+            early_stop_counter = 0
+        else:
+            early_stop_counter += 1
+            if early_stop_counter >= 40:
+                print("Early stopping triggered")
+                break
 
 
 def evaluate_conv(args, unique_entities):
     model_conv = SpKBGATConvOnly(entity_embeddings, relation_embeddings, args.entity_out_dim, args.entity_out_dim,
                                  args.drop_GAT, args.drop_conv, args.alpha, args.alpha_conv,
                                  args.nheads_GAT, args.out_channels)
-    model_conv.load_state_dict(torch.load(
-        '{0}conv/trained_{1}.pth'.format(args.output_folder, args.epochs_conv - 1)), strict=False)
+    load_model(model_conv, args.output_folder + "conv/", best_loss_conv_model_epoch)
+    # model_conv.load_state_dict(torch.load(
+    #     '{0}conv/trained_{1}.pth'.format(args.output_folder, args.epochs_conv - 1)), strict=False)
 
     model_conv.cuda()
     model_conv.eval()
     with torch.no_grad():
-        Corpus_.get_validation_pred(args, model_conv, unique_entities)
+        Corpus_.get_validation_pred(args, model_conv, unique_entities) 
 
 
 train_gat(args)
